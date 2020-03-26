@@ -134,6 +134,31 @@ class ReplayMemory():
     weights = torch.tensor(weights / weights.max(), dtype=torch.float32, device=self.device)  # Normalise by max importance-sampling weight from batch
     return tree_idxs, states, actions, returns, next_states, nonterminals, weights
 
+  def _get_sample_uniform(self):
+    sample = np.random.uniform(0, self.transitions.total()-1)
+    #  prob, idx, tree_idx = self.transitions.find(sample)  # Retrieve sample from tree with un-normalised probability
+    idx = int(sample)
+    # Retrieve all required transition data (from t - h to t + n)
+    transition = self._get_transition(idx)
+    # Create un-discretised state and nth next state
+    state = torch.stack([trans.state for trans in transition[:self.history]]).to(device=self.device).to(dtype=torch.float32).div_(255)
+    next_state = torch.stack([trans.state for trans in transition[self.n:self.n + self.history]]).to(device=self.device).to(dtype=torch.float32).div_(255)
+    # Discrete action to be used as index
+    action = torch.tensor([transition[self.history - 1].action], dtype=torch.int64, device=self.device)
+    # Calculate truncated n-step discounted return R^n = Σ_k=0->n-1 (γ^k)R_t+k+1 (note that invalid nth next states have reward 0)
+    R = torch.tensor([sum(self.discount ** n * transition[self.history + n - 1].reward for n in range(self.n))], dtype=torch.float32, device=self.device)
+    # Mask for non-terminal nth next states
+    nonterminal = torch.tensor([transition[self.history + self.n - 1].nonterminal], dtype=torch.float32, device=self.device)
+
+    return state, action, R, next_state, nonterminal
+
+  def sample_uniform(self, batch_size):
+    batch = [self._get_sample_uniform() for i in range(batch_size)]  # Get batch of valid samples
+    states, actions, returns, next_states, nonterminals = zip(*batch)
+    states, next_states, = torch.stack(states), torch.stack(next_states)
+    actions, returns, nonterminals = torch.cat(actions), torch.cat(returns), torch.stack(nonterminals)
+    return states, actions, returns, next_states, nonterminals
+
 
   def update_priorities(self, idxs, priorities):
     priorities = np.power(priorities, self.priority_exponent)
